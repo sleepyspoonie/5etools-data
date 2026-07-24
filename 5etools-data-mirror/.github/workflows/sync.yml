@@ -1,0 +1,48 @@
+name: Sync 5etools data
+
+on:
+  schedule:
+    - cron: "17 9 * * *"   # daily, 09:17 UTC (odd minute avoids GitHub's on-the-hour congestion)
+  workflow_dispatch: {}      # manual "Run workflow" button
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch upstream data (sparse)
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/5etools-mirror-3/5etools-src.git /tmp/upstream
+          git -C /tmp/upstream sparse-checkout set data
+
+      - name: Update and push if changed
+        run: |
+          rsync -a --delete /tmp/upstream/data/ data/
+          UPSTREAM_SHA=$(git -C /tmp/upstream rev-parse --short HEAD)
+          git config user.name "5etools-sync"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A data
+          if ! git diff --cached --quiet; then
+            echo "$UPSTREAM_SHA $(date -u +%F)" > .last-sync
+            git add .last-sync
+            git commit -m "Sync data from 5etools-src @ $UPSTREAM_SHA"
+            git push
+          else
+            # Keepalive: GitHub disables cron workflows after 60 days without
+            # repo activity. If upstream has been quiet 45+ days, nudge.
+            LAST=$(git log -1 --format=%ct)
+            NOW=$(date +%s)
+            if [ $(( (NOW - LAST) / 86400 )) -ge 45 ]; then
+              date -u +%F > .last-sync
+              git add .last-sync
+              git commit -m "Keepalive (no upstream changes)"
+              git push
+            else
+              echo "No changes; nothing to do."
+            fi
+          fi
